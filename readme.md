@@ -8,10 +8,11 @@ Prerequisites
 Before using the scripts in this repository, ensure you have the following prerequisites:
 
 An active Microsoft Azure subscription.
-PowerShell installed on your local machine for troubleshotting.
+PowerShell 7.4 installed on your local machine for troubleshotting.
 Required PowerShell modules, including:
 Microsoft.Graph
 Azure PowerShell modules (e.g., Az)
+
 Scripts Overview
 This repository includes the following scripts and solutions:
 
