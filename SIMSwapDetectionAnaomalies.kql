@@ -1,153 +1,72 @@
-// Part 1: Unusual MFA methods
-(
-    SigninLogs
-    | where TimeGenerated >= ago(14d) and TimeGenerated <= now()
+// Main query - single pass through SigninLogs
+SigninLogs
+| where TimeGenerated >= ago(14d) and TimeGenerated <= now()
+| where AuthenticationRequirement == "multiFactorAuthentication"
+| where Status.errorCode == 0  // Only successful attempts
+| extend 
+    UserPrincipalName = tostring(UserPrincipalName),
+    AuthDetails = todynamic(AuthenticationDetails),
+    DeviceId = tostring(DeviceDetail.deviceId),
+    DeviceCompliance = tostring(DeviceDetail.isCompliant),
+    Location = strcat(tostring(LocationDetails.countryOrRegion), ", ", tostring(LocationDetails.city)),
+    IsUnknownDevice = iff(isempty(DeviceDetail.deviceId), true, false)
+| extend MFAMethod = iff(isnotempty(AuthDetails) and array_length(AuthDetails) > 0, tostring(AuthDetails[0].authenticationMethod), "")
+| where isnotempty(MFAMethod)
+| join kind=leftouter (
+    // Historical data in a single subquery
+    SigninLogs 
+    | where TimeGenerated >= ago(60d) and TimeGenerated < ago(14d)
     | where AuthenticationRequirement == "multiFactorAuthentication"
-    | where Status.errorCode == 0  // Only successful attempts
-    | extend 
-        UserPrincipalName = tostring(UserPrincipalName),
-        AuthDetails = todynamic(AuthenticationDetails)
-    | extend MFAMethod = iif(isnotempty(AuthDetails) and array_length(AuthDetails) > 0, tostring(AuthDetails[0].authenticationMethod), "")
-    | where isnotempty(MFAMethod)
-    // Filter for less secure methods - exclude passwordless
-    | where MFAMethod has_any ("phone", "sms", "text") 
-    | where not(MFAMethod has_any ("passwordless", "fido"))
-    | project
-        TimeGenerated,
-        UserPrincipalName,
-        IPAddress,
-        Location = strcat(LocationDetails.countryOrRegion, ", ", LocationDetails.city),
-        MFAMethod,
-        AppDisplayName,
-        ResourceDisplayName,
-        Device = strcat(DeviceDetail.browser, " on ", DeviceDetail.operatingSystem),
-        UserAgent,
-        AuthenticationMethodsUsed,
-        Status
-    | join kind=inner (
-        SigninLogs
-        | where TimeGenerated >= ago(60d) and TimeGenerated < ago(14d)
-        | where AuthenticationRequirement == "multiFactorAuthentication"
-        | where Status.errorCode == 0  // Only successful attempts
-        | extend 
-            UserPrincipalName = tostring(UserPrincipalName),
-            AuthDetails = todynamic(AuthenticationDetails)
-        | extend MFAMethod = iif(isnotempty(AuthDetails) and array_length(AuthDetails) > 0, tostring(AuthDetails[0].authenticationMethod), "")
-        | where isnotempty(MFAMethod)
-        | summarize 
-            AuthCount = count(),
-            CommonMethods = make_set(MFAMethod),
-            CommonApps = make_set(AppDisplayName)
-            by UserPrincipalName
-    ) on UserPrincipalName
-    | where AuthCount > 5
-    | where not(CommonMethods has MFAMethod)
-    | extend RiskScore = case(
-        MFAMethod has "phone", 80,  // Phone call is highest risk
-        MFAMethod has "sms", 75,    // SMS slightly lower
-        MFAMethod has "text", 70,   // Text-based methods
-        50)                         // Other methods
-    | where RiskScore > 30
-    | project
-        TimeGenerated,
-        UserPrincipalName,
-        AnomalyType = "Unusual MFA Method",
-        IPAddress,
-        Location,
-        AppDisplayName,
-        ResourceDisplayName,
-        MFAMethod,
-        RiskScore,
-        Device,
-        UserAgent,
-        NormalMethods = strcat_array(CommonMethods, ", "),
-        CommonApplications = strcat_array(CommonApps, ", "),
-        HistoricalAuthCount = AuthCount,
-        Status
-)
-| union
-(
-    // Part 2: Registration changes
-    AuditLogs
-    | where TimeGenerated >= ago(14d) and TimeGenerated <= now()
-    | where OperationName has "authentication method"
-    | where Result == "success"
-    | where TargetResources has_any ("phoneAuthentication", "sms")
-    | extend 
-        UserPrincipalName = tostring(InitiatedBy.user.userPrincipalName),
-        CredentialType = case(
-            TargetResources has "phoneAuthentication", "Phone Voice",
-            TargetResources has "sms", "SMS",
-            "Unknown"
-        )
-    | join kind=leftouter (
-        SigninLogs
-        | where TimeGenerated >= ago(60d) and TimeGenerated < ago(14d)
-        | where AuthenticationRequirement == "multiFactorAuthentication"
-        | where Status.errorCode == 0  // Only successful attempts
-        | extend 
-            UserPrincipalName = tostring(UserPrincipalName),
-            AuthDetails = todynamic(AuthenticationDetails)
-        | extend MFAMethod = iif(isnotempty(AuthDetails) and array_length(AuthDetails) > 0, tostring(AuthDetails[0].authenticationMethod), "")
-        | where isnotempty(MFAMethod)
-        | summarize 
-            AuthCount = count(),
-            CommonMethods = make_set(MFAMethod),
-            CommonApps = make_set(AppDisplayName)
-            by UserPrincipalName
-    ) on UserPrincipalName
-    | where isnotempty(CommonMethods)
-    | project
-        TimeGenerated,
-        UserPrincipalName,
-        AnomalyType = strcat("New ", CredentialType, " Registration"),
-        IPAddress = InitiatedBy.user.ipAddress,
-        Location = "",
-        AppDisplayName = "Azure Portal",
-        ResourceDisplayName = "Authentication Methods",
-        MFAMethod = CredentialType,
-        RiskScore = case(CredentialType == "Phone Voice", 80, CredentialType == "SMS", 75, 50),
-        Device = "",
-        UserAgent = "",
-        NormalMethods = strcat_array(CommonMethods, ", "),
-        CommonApplications = strcat_array(CommonApps, ", "),
-        HistoricalAuthCount = AuthCount,
-        Status = "Success"
-)
-| union
-(
-    // Part 3: All SMS/Phone auth events
-    SigninLogs
-    | where TimeGenerated >= ago(14d) and TimeGenerated <= now()
-    | where AuthenticationRequirement == "multiFactorAuthentication"
-    | where Status.errorCode == 0  // Only successful attempts
-    | extend 
-        UserPrincipalName = tostring(UserPrincipalName),
-        AuthDetails = todynamic(AuthenticationDetails)
-    | extend MFAMethod = iif(isnotempty(AuthDetails) and array_length(AuthDetails) > 0, tostring(AuthDetails[0].authenticationMethod), "")
-    | where isnotempty(MFAMethod)
-    // Filter specifically for phone and SMS methods
-    | where MFAMethod has_any ("phone", "sms", "text")
-    | where not(MFAMethod has_any ("passwordless", "fido"))
-    | project
-        TimeGenerated,
-        UserPrincipalName,
-        AnomalyType = "SMS/Phone Auth Activity", 
-        IPAddress,
-        Location = strcat(LocationDetails.countryOrRegion, ", ", LocationDetails.city),
-        AppDisplayName,
-        ResourceDisplayName,
-        MFAMethod,
-        RiskScore = case(
-            MFAMethod has "phone", 80,  // Phone call is highest risk
-            MFAMethod has "sms", 75,    // SMS slightly lower
-            MFAMethod has "text", 70,   // Text-based methods
-            50),                        // Other methods
-        Device = strcat(DeviceDetail.browser, " on ", DeviceDetail.operatingSystem),
-        UserAgent,
-        NormalMethods = "",
-        CommonApplications = "",
-        HistoricalAuthCount = 0,
-        Status
-)
-| order by RiskScore desc, TimeGenerated desc  // Order by risk first, then by time
+    | where Status.errorCode == 0
+    | summarize 
+        HistoricalCount = count(),
+        KnownMethods = make_set(tostring(todynamic(AuthenticationDetails)[0].authenticationMethod)),
+        KnownLocations = make_set(strcat(tostring(LocationDetails.countryOrRegion), ", ", tostring(LocationDetails.city))),
+        KnownDevices = make_set(tostring(DeviceDetail.deviceId))
+        by UserPrincipalName
+) on UserPrincipalName
+// Evaluate multiple risk factors
+| extend 
+    IsRiskyMethod = MFAMethod has_any ("phone", "sms", "text", "email"),
+    IsMethodAnomaly = isnotempty(KnownMethods) and not(KnownMethods has MFAMethod),
+    IsLocationAnomaly = isnotempty(KnownLocations) and not(KnownLocations has Location) and isnotempty(Location),
+    IsFirstTimeUser = isempty(HistoricalCount) or HistoricalCount < 5
+// Calculate combined risk score
+| extend RiskScore = case(
+    IsFirstTimeUser, 40,
+    IsRiskyMethod and IsLocationAnomaly, 90,
+    IsRiskyMethod and IsMethodAnomaly, 85,
+    IsRiskyMethod and IsUnknownDevice, 80,
+    IsLocationAnomaly and IsMethodAnomaly, 75,
+    IsRiskyMethod, 65,
+    IsLocationAnomaly, 60,
+    IsMethodAnomaly, 55,
+    IsUnknownDevice, 45,
+    20)
+| where RiskScore > 40
+// Create detailed anomaly type
+| extend AnomalyType = case(
+    IsRiskyMethod and IsLocationAnomaly, strcat("Risky Auth Method (", MFAMethod, ") from New Location (", Location, ")"),
+    IsRiskyMethod and IsMethodAnomaly, strcat("Unusual Auth Method (", MFAMethod, ") for User"),
+    IsRiskyMethod and IsUnknownDevice, strcat("Risky Auth Method (", MFAMethod, ") from Unknown Device"),
+    IsLocationAnomaly and IsMethodAnomaly, "New Method from New Location",
+    IsRiskyMethod, strcat("Risky Auth Method (", MFAMethod, ")"),
+    IsLocationAnomaly, strcat("New Location (", Location, ")"),
+    IsMethodAnomaly, strcat("Unusual Auth Method (", MFAMethod, ")"),
+    IsUnknownDevice, "Unknown Device",
+    "Other Risk")
+// Output relevant fields
+| project
+    TimeGenerated,
+    UserPrincipalName,
+    AnomalyType,
+    RiskScore,
+    IPAddress,
+    Location,
+    MFAMethod,
+    AppDisplayName,
+    ResourceDisplayName,
+    IsUnknownDevice,
+    KnownMethods = iff(isempty(KnownMethods), "", tostring(KnownMethods)),
+    KnownLocations = iff(isempty(KnownLocations), "", tostring(KnownLocations))
+| order by RiskScore desc, TimeGenerated desc
