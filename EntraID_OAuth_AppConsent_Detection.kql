@@ -1,0 +1,12 @@
+AuditLogs
+| where Category == "ApplicationManagement"
+| where ActivityDisplayName == "Consent to application"
+| extend TargetResourceArray = parse_json(TargetResources)
+| extend AppDisplayName = tostring(TargetResourceArray[0].displayName)
+| extend ModifiedProps = parse_json(TargetResourceArray[0].modifiedProperties)
+| extend AppId = tostring(ModifiedProps[0].newValue)
+| extend InitiatedByUPN = tostring(InitiatedBy.user.userPrincipalName)
+| where AppDisplayName !in~ ("Microsoft Teams", "Office 365 Exchange Online") 
+| where InitiatedByUPN !contains "serviceaccount"
+| project TimeGenerated, InitiatedByUPN, AppDisplayName, AppId, ActivityDisplayName, Result, ResultReason
+| order by TimeGenerated desc
