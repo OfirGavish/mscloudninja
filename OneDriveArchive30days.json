@@ -1,0 +1,357 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+            "Recurrence": {
+                "type": "Recurrence",
+                "recurrence": {
+                    "interval": 1,
+                    "frequency": "Day",
+                    "timeZone": "GMT Standard Time",
+                    "startTime": "2025-03-27T15:00:00Z"
+                }
+            }
+        },
+        "actions": {
+            "Initialize_variable_-_foldersToProcess": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "foldersToProcess",
+                            "type": "Array",
+                            "value": [
+                                {
+                                    "id": "@body('Get_file_metadata_using_path')?['id']",
+                                    "name": "Root",
+                                    "path": "FolderName"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Get_file_metadata_using_path": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_variable_-_currentFolderPath": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "currentFolderPath",
+                            "type": "String",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_variable_-_currentFolderName": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Until": {
+                "type": "Until",
+                "expression": "@equals(length(variables('foldersToProcess')), 0)",
+                "limit": {
+                    "count": 60,
+                    "timeout": "PT1H"
+                },
+                "actions": {
+                    "updatedFolders": {
+                        "type": "Compose",
+                        "inputs": "@skip(variables('foldersToProcess'), 1)",
+                        "runAfter": {
+                            "For_each_file_or_folder_in_Source_OneDrive_Folder": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "List_files_in_folder": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['onedriveforbusiness']['connectionId']"
+                                }
+                            },
+                            "method": "get",
+                            "path": "/datasets/default/foldersV2/@{encodeURIComponent(encodeURIComponent(variables('currentFolderId')))}",
+                            "queries": {
+                                "skipToken": "",
+                                "top": 20
+                            }
+                        },
+                        "runAfter": {
+                            "Set_variable_-_currentFolderPath": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "For_each_file_or_folder_in_Source_OneDrive_Folder": {
+                        "type": "Foreach",
+                        "foreach": "@body('List_files_in_folder')?['value']",
+                        "actions": {
+                            "checking_if_an_item_is_a_folder": {
+                                "type": "If",
+                                "expression": {
+                                    "and": [
+                                        {
+                                            "equals": [
+                                                "@items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['IsFolder']",
+                                                true
+                                            ]
+                                        }
+                                    ]
+                                },
+                                "actions": {
+                                    "Append_to_array_variable": {
+                                        "type": "AppendToArrayVariable",
+                                        "inputs": {
+                                            "name": "foldersToProcess",
+                                            "value": {
+                                                "id": "@items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['id']",
+                                                "name": "@items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['name']",
+                                                "path": "@concat(variables('currentFolderPath'), '/', items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['name'])"
+                                            }
+                                        }
+                                    }
+                                },
+                                "else": {
+                                    "actions": {
+                                        "Condition_-_if_files_last_modified_date_is_more_than_30_days_ago": {
+                                            "type": "If",
+                                            "expression": {
+                                                "and": [
+                                                    {
+                                                        "greater": [
+                                                            "@addDays(utcNow(), -30)",
+                                                            "@items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['LastModified']"
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Get_file_content": {
+                                                    "type": "ApiConnection",
+                                                    "inputs": {
+                                                        "host": {
+                                                            "connection": {
+                                                                "name": "@parameters('$connections')['onedriveforbusiness']['connectionId']"
+                                                            }
+                                                        },
+                                                        "method": "get",
+                                                        "path": "/datasets/default/files/@{encodeURIComponent(encodeURIComponent(items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['id']))}/content",
+                                                        "queries": {
+                                                            "inferContentType": true
+                                                        }
+                                                    }
+                                                },
+                                                "Create_file": {
+                                                    "type": "ApiConnection",
+                                                    "inputs": {
+                                                        "host": {
+                                                            "connection": {
+                                                                "name": "@parameters('$connections')['onedriveforbusiness-1']['connectionId']"
+                                                            }
+                                                        },
+                                                        "method": "post",
+                                                        "body": "@body('Get_file_content')",
+                                                        "path": "/datasets/default/files",
+                                                        "queries": {
+                                                            "folderPath": "@concat('/TSLogArchive/', variables('currentFolderPath'))",
+                                                            "name": "@items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['name']"
+                                                        }
+                                                    },
+                                                    "runAfter": {
+                                                        "Get_file_content": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "runtimeConfiguration": {
+                                                        "contentTransfer": {
+                                                            "transferMode": "Chunked"
+                                                        }
+                                                    }
+                                                },
+                                                "Condition": {
+                                                    "type": "If",
+                                                    "expression": {
+                                                        "and": [
+                                                            {
+                                                                "equals": [
+                                                                    "",
+                                                                    ""
+                                                                ]
+                                                            }
+                                                        ]
+                                                    },
+                                                    "actions": {
+                                                        "Delete_file": {
+                                                            "type": "ApiConnection",
+                                                            "inputs": {
+                                                                "host": {
+                                                                    "connection": {
+                                                                        "name": "@parameters('$connections')['onedriveforbusiness']['connectionId']"
+                                                                    }
+                                                                },
+                                                                "method": "delete",
+                                                                "path": "/datasets/default/files/@{encodeURIComponent(encodeURIComponent(items('For_each_file_or_folder_in_Source_OneDrive_Folder')?['id']))}"
+                                                            }
+                                                        }
+                                                    },
+                                                    "else": {
+                                                        "actions": {}
+                                                    },
+                                                    "runAfter": {
+                                                        "Create_file": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "runAfter": {
+                            "List_files_in_folder": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Set_variable_(currentFolderName)": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "currentFolderName",
+                            "value": "@first(variables('foldersToProcess')).name"
+                        },
+                        "runAfter": {
+                            "Set_variable_-_currentFolderId": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Set_variable_-_currentFolderId": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "currentFolderId",
+                            "value": "@first(variables('foldersToProcess')).id"
+                        }
+                    },
+                    "Set_variable_-_currentFolderPath": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "currentFolderPath",
+                            "value": "@first(variables('foldersToProcess')).path"
+                        },
+                        "runAfter": {
+                            "Set_variable_(currentFolderName)": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Set_variable": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "foldersToProcess",
+                            "value": "@outputs('updatedFolders')"
+                        },
+                        "runAfter": {
+                            "updatedFolders": [
+                                "Succeeded"
+                            ]
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Initialize_variable_-_currentFolderPath": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_variable_-_currentFolderId": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "currentFolderId",
+                            "type": "String",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_variable_-_foldersToProcess": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_variable_-_currentFolderName": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "currentFolderName",
+                            "type": "String",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_variable_-_currentFolderId": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Get_file_metadata_using_path": {
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['onedriveforbusiness']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/datasets/default/GetFileByPath",
+                    "queries": {
+                        "path": "/FolderName"
+                    }
+                },
+                "runAfter": {}
+            }
+        },
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "type": "Object",
+                "defaultValue": {}
+            }
+        }
+    },
+    "parameters": {
+        "$connections": {
+            "type": "Object",
+            "value": {
+                "onedriveforbusiness": {
+                    "id": "/subscriptions/xxxx-xxxxx-xxxx-xxxxxx-xxxxxxx/providers/Microsoft.Web/locations/westeurope/managedApis/onedriveforbusiness",
+                    "connectionId": "/subscriptions/xxxx-xxxxx-xxxx-xxxxxx-xxxxxxx/resourceGroups/RGName/providers/Microsoft.Web/connections/onedriveforbusiness",
+                    "connectionName": "onedriveforbusiness"
+                },
+                "onedriveforbusiness-1": {
+                    "id": "/subscriptions/xxxx-xxxxx-xxxx-xxxxxx-xxxxxxx/providers/Microsoft.Web/locations/westeurope/managedApis/onedriveforbusiness",
+                    "connectionId": "/subscriptions/xxxx-xxxxx-xxxx-xxxxxx-xxxxxxx/resourceGroups/RGName/providers/Microsoft.Web/connections/onedriveforbusiness-1",
+                    "connectionName": "onedriveforbusiness-1"
+                }
+            }
+        }
+    }
+}
