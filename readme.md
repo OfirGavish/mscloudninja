@@ -21,9 +21,8 @@ Before using the scripts in this repository, ensure you have the following prere
 
 This repository includes the following scripts and solutions:
 
-1. **Intune Remediations Scripts Alerts**
-   - Automates reporting for Intune remediation scripts.
-   - Notifies administrators of any failures or issues with running scripts.
+1. **Azure KQL Queries**
+   - Used with Microsoft Sentinel.
 
 2. **Azure Automation Tasks**
    - Provides various automation scripts for managing Entra ID, Intune, M365 and Azure Monitor log ingestion
