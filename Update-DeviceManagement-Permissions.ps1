@@ -41,9 +41,9 @@
     Updates all identified applications and service principals without prompting.
 
 .NOTES
-    Author: Generated Script
+    Author: Ofir Gavish
     Version: 1.0
-    Date: 2025-01-17
+    Date: 2025-07-17
     
     This script requires the following Microsoft Graph permissions:
     - Application.ReadWrite.All
