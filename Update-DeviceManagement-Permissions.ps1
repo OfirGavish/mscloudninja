@@ -23,7 +23,7 @@
     - DeviceManagementScripts.Read.All
     - DeviceManagementScripts.ReadWrite.All
 
-.PARAMETER Whatif
+.PARAMETER WhatIf
     When specified, shows what changes would be made without actually making them.
 
 .PARAMETER Force
@@ -33,7 +33,7 @@
     Path to write detailed logs. Defaults to current directory.
 
 .EXAMPLE
-    .\Update-DeviceManagement-Permissions.ps1 -Whatif
+    .\Update-DeviceManagement-Permissions.ps1 -WhatIf
     Shows what changes would be made without making them.
 
 .EXAMPLE
@@ -58,9 +58,6 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $false)]
-    [switch]$Whatif,
-    
-    [Parameter(Mandatory = $false)]
     [switch]$Force,
     
     [Parameter(Mandatory = $false)]
@@ -79,6 +76,9 @@ $PermissionMappings = @{
 
 # Define the Microsoft Graph service principal ID
 $MicrosoftGraphAppId = "00000003-0000-0000-c000-000000000000"
+
+# Define specific service principal ID to ignore
+$IgnoreServicePrincipalId = "975699fc-e02c-4eea-ab81-a7bc7f3449b1"  # Modern Workplace Management
 
 # Logging function
 function Write-Log {
@@ -99,7 +99,13 @@ function Write-Log {
         }
     )
     
-    Add-Content -Path $LogPath -Value $logEntry
+    # Always write to log file regardless of WhatIf mode
+    try {
+        Add-Content -Path $LogPath -Value $logEntry -ErrorAction SilentlyContinue
+    }
+    catch {
+        # Silently continue if log file write fails
+    }
 }
 
 # Function to get Microsoft Graph Service Principal
@@ -169,7 +175,16 @@ function Test-ServicePrincipalHasOldPermissions {
     )
     
     try {
-        $appRoleAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $ServicePrincipal.Id -Filter "resourceId eq '$($GraphServicePrincipal.Id)'"
+        # Try with filter first
+        try {
+            $appRoleAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $ServicePrincipal.Id -Filter "resourceId eq $($GraphServicePrincipal.Id)"
+        }
+        catch {
+            # Fallback: Get all assignments and filter in PowerShell
+            Write-Log "Filter failed for $($ServicePrincipal.DisplayName), using fallback method" -Level "WARNING"
+            $allAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $ServicePrincipal.Id
+            $appRoleAssignments = $allAssignments | Where-Object { $_.ResourceId -eq $GraphServicePrincipal.Id }
+        }
         
         foreach ($assignment in $appRoleAssignments) {
             $permissionValue = $GraphServicePrincipal.AppRoles | Where-Object { $_.Id -eq $assignment.AppRoleId } | Select-Object -ExpandProperty Value
@@ -248,7 +263,7 @@ function Update-ApplicationPermissions {
         
         if ($needsUpdate) {
             if ($PSCmdlet.ShouldProcess($Application.DisplayName, "Update application permissions")) {
-                if (-not $Whatif) {
+                if (-not $WhatIfPreference) {
                     Update-MgApplication -ApplicationId $Application.Id -RequiredResourceAccess $updatedResourceAccess
                     Write-Log "  Successfully updated application permissions" -Level "SUCCESS"
                 }
@@ -276,7 +291,17 @@ function Update-ServicePrincipalPermissions {
     try {
         Write-Log "Updating service principal: $($ServicePrincipal.DisplayName) (ID: $($ServicePrincipal.Id))"
         
-        $appRoleAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $ServicePrincipal.Id -Filter "resourceId eq '$($GraphServicePrincipal.Id)'"
+        # Try with filter first
+        try {
+            $appRoleAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $ServicePrincipal.Id -Filter "resourceId eq $($GraphServicePrincipal.Id)"
+        }
+        catch {
+            # Fallback: Get all assignments and filter in PowerShell
+            Write-Log "Filter failed for $($ServicePrincipal.DisplayName), using fallback method" -Level "WARNING"
+            $allAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $ServicePrincipal.Id
+            $appRoleAssignments = $allAssignments | Where-Object { $_.ResourceId -eq $GraphServicePrincipal.Id }
+        }
+        
         $needsUpdate = $false
         
         foreach ($assignment in $appRoleAssignments) {
@@ -293,7 +318,7 @@ function Update-ServicePrincipalPermissions {
                         Write-Log "  Adding $newPermissionValue alongside existing $permissionValue"
                         
                         if ($PSCmdlet.ShouldProcess($ServicePrincipal.DisplayName, "Add new service principal permission")) {
-                            if (-not $Whatif) {
+                            if (-not $WhatIfPreference) {
                                 # Add new permission (keep old one)
                                 $newAssignment = @{
                                     PrincipalId = $ServicePrincipal.Id
@@ -336,7 +361,7 @@ function Main {
         Write-Log "Log file: $LogPath"
         
         # Check if running in WhatIf mode
-        if ($Whatif) {
+        if ($WhatIfPreference) {
             Write-Log "Running in WHATIF mode - no changes will be made" -Level "WARNING"
         }
         
@@ -379,6 +404,12 @@ function Main {
         $spsToUpdate = @()
         
         foreach ($sp in $servicePrincipals) {
+            # Skip specific service principal that should be ignored
+            if ($sp.Id -eq $IgnoreServicePrincipalId) {
+                Write-Log "Skipping specific service principal: $($sp.DisplayName) (ID: $($sp.Id))" -Level "INFO"
+                continue
+            }
+            
             if (Test-ServicePrincipalHasOldPermissions -ServicePrincipal $sp -GraphServicePrincipal $graphSP) {
                 $spsToUpdate += $sp
                 Write-Log "Found service principal with old permissions: $($sp.DisplayName)"
@@ -396,7 +427,7 @@ function Main {
         }
         
         # Confirmation prompt
-        if (-not $Force -and -not $Whatif) {
+        if (-not $Force -and -not $WhatIfPreference) {
             $confirmation = Read-Host "Do you want to proceed with updating permissions? (y/N)"
             if ($confirmation -notmatch "^[Yy]$") {
                 Write-Log "Operation cancelled by user"
