@@ -1,0 +1,18 @@
+SigninLogs
+| where ConditionalAccessStatus == "success"
+| where (
+        // Safari on Windows
+        (UserAgent contains "Safari" and DeviceDetail contains "Windows")
+        // Internet Explorer
+        or UserAgent contains "MSIE"
+        or UserAgent contains "Trident/"
+        // Legacy Edge (non-Chromium)
+        or UserAgent matches regex @"Edge/1[2-8]\."
+        // Legacy Android stock browser
+        or UserAgent contains "Android" and UserAgent contains "Version/"
+        // Legacy/rare mobile browsers
+        or UserAgent contains "NokiaBrowser"
+        or UserAgent contains "BlackBerry"
+    )
+| summarize count() by UserPrincipalName, AppDisplayName, AuthenticationMethodsUsed, UserAgent
+| where AuthenticationMethodsUsed has_any ("sms", "email", "authenticator")
